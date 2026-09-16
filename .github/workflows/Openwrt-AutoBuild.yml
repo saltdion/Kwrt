@@ -21,9 +21,9 @@ on:
         options:
           - amlogic_meson
 
-# 编译和下载产物仅需读取权限，无需配置个人访问令牌。
+# 发布 Release 需要仓库内容写权限，无需配置个人访问令牌。
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 env:
@@ -256,10 +256,11 @@ jobs:
 
     - name: Organize files
       id: organize
-      continue-on-error: true
       run: |
         shopt -s extglob
         cd openwrt/bin/targets/*/*/
+        # 将固件输出目录传递给 Release 上传步骤。
+        echo "FIRMWARE=$PWD" >> "$GITHUB_ENV"
         cp $GITHUB_WORKSPACE/openwrt/.config ${{matrix.target}}.config || true
         cp $GITHUB_WORKSPACE/openwrt/build_dir/target-*/linux-*/linux-*/.config ${{matrix.target}}_kernel.config || true
         Emoji=("🎉" "🤞" "✨" "🎁" "🎈" "🎄" "🎨" "💋" "🍓" "🍕" "🍉" "💐" "🌴" "🚀" "🛸" "🗽" "⛅" "🌈" "🔥" "⛄" "🐶" "🏅" "🦄" "🐤")
@@ -286,29 +287,27 @@ jobs:
         path: |
           openwrt/bin/targets/
 
-    - name: Create release
-      id: create_release
-      if: env.REPO_TOKEN && env.UPLOAD_FIRMWARE_FOR_RELEASE == 'true'
-      continue-on-error: true
-      run: |
-        echo -e "墙内加速下载 🚀:\n" >> release.txt
-        echo -e "[腾讯云] (https://dl.openwrt.ai/firmware/${{matrix.target}}/ ☁)\n" >> release.txt
-        [ ${{ env.WETRANS }} ] && echo -e "[WeTransfer] (${{ env.WETRANS }} 🗽)\n" >> release.txt
-        [ ${{ env.COWURL }} ] && echo -e "[奶牛上传] (${{ env.COWURL }} 🐮)\n" >> release.txt
-        [ ${{ env.NOTICE }} ] && echo -e "${{ env.NOTICE }}" >> release.txt || true
-
+    # 编译成功后发布固件；标签包含运行编号，重跑也不会覆盖旧版本。
     - name: Upload firmware for release
-      uses: softprops/action-gh-release@master
-      continue-on-error: true
-      if: env.REPO_TOKEN && env.UPLOAD_FIRMWARE_FOR_RELEASE == 'true'
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
+      if: env.UPLOAD_FIRMWARE_FOR_RELEASE == 'true'
+      uses: softprops/action-gh-release@v2
       with:
-        files: "${{ env.FIRMWARE }}/*"
-        name: ${{ env.date2 }} ${{matrix.target}} ${{ env.EMOJI }}
-        tag_name: ${{ env.date }}_${{matrix.target}}
-        body_path: release.txt
-    
+        token: ${{ github.token }}
+        tag_name: ${{ matrix.target }}-${{ github.run_number }}-${{ github.run_attempt }}
+        target_commitish: ${{ github.sha }}
+        name: Kwrt ${{ matrix.target }} · 第 ${{ github.run_number }} 次构建
+        body: |
+          固件由 GitHub Actions 自动编译。
+          编译目标：${{ matrix.target }}（本仓库手动编译入口为斐讯 N1）。
+          源码提交：${{ github.sha }}
+          构建记录：https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # 上传固件镜像、校验文件和配置，避免将 ImageBuilder 等工具作为附件。
+        files: |
+          ${{ env.FIRMWARE }}/*.img.gz
+          ${{ env.FIRMWARE }}/sha256sums
+          ${{ env.FIRMWARE }}/*.config
+        fail_on_unmatched_files: true
+
     - name: WeChat notification
       continue-on-error: true
       if: github.event_name != 'workflow_dispatch' && env.SCKEY
