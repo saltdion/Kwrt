@@ -10,9 +10,24 @@ name: Build OpenWrt
 
 on: 
   repository_dispatch:
+  # 在 Actions 页面手动选择斐讯 N1，避免触发全部平台。
+  workflow_dispatch:
+    inputs:
+      target:
+        description: '编译目标（amlogic_meson：斐讯 N1）'
+        required: true
+        default: amlogic_meson
+        type: choice
+        options:
+          - amlogic_meson
+
+# 编译和下载产物仅需读取权限，无需配置个人访问令牌。
+permissions:
+  contents: read
+  actions: read
 
 env:
-  REPO_TOKEN: ${{ secrets.TOKEN_KIDDIN9 }}
+  REPO_TOKEN: ${{ github.token }}
   PPPOE_USERNAME: ${{ secrets.PPPOE_USERNAME }}
   PPPOE_PASSWD: ${{ secrets.PPPOE_PASSWD }}
   SCKEY: ${{ secrets.SCKEY }}
@@ -31,7 +46,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: ["${{ github.event.client_payload.target }}"]
+        target: ["${{ inputs.target || github.event.client_payload.target }}"]
         
     steps:
     - name: Checkout
@@ -61,18 +76,18 @@ jobs:
         echo "UPLOAD_FIRMWARE_FOR_RELEASE=${UPLOAD_FIRMWARE_FOR_RELEASE}" >> $GITHUB_ENV
         echo "UPLOAD_FIRMWARE_TO_COWTRANSFER=${UPLOAD_FIRMWARE_TO_COWTRANSFER}" >> $GITHUB_ENV
         echo "UPLOAD_FIRMWARE_TO_WETRANSFER=${UPLOAD_FIRMWARE_TO_WETRANSFER}" >> $GITHUB_ENV
-        sed -i "1a REPO_TOKEN=${{ secrets.TOKEN_KIDDIN9 }}" ${{ github.workspace }}/devices/common/diy.sh
+        sed -i "1a REPO_TOKEN=${{ github.token }}" ${{ github.workspace }}/devices/common/diy.sh
         sed -i "1a TARGET=${{matrix.target}}" ${{ github.workspace }}/devices/common/diy.sh
 
     - name: Trigger Packages Update
       continue-on-error: true
       if: contains(github.event.action, 'pkg')
       run: |
-        status=$(curl -H "Authorization: token ${{ secrets.TOKEN_KIDDIN9 }}" -s "https://api.github.com/repos/kiddin9/op-packages/actions/runs" | jq -r '.workflow_runs[0].status')
+        status=$(curl -H "Authorization: token ${{ github.token }}" -s "https://api.github.com/repos/kiddin9/op-packages/actions/runs" | jq -r '.workflow_runs[0].status')
         if [[ "$status" == "completed" ]]; then
           curl -X POST https://api.github.com/repos/kiddin9/op-packages/dispatches \
             -H "Accept: application/vnd.github.everest-preview+json" \
-            -H "Authorization: token ${{ secrets.TOKEN_KIDDIN9 }}" \
+            -H "Authorization: token ${{ github.token }}" \
           --data '{"event_type": "update"}'
         fi
 
@@ -115,7 +130,7 @@ jobs:
       run: |
         set -x
         TAG_INFO="$(curl -gs -H 'Content-Type: application/json' \
-           -H "Authorization: Bearer ${{ secrets.TOKEN_KIDDIN9 }}" \
+           -H "Authorization: Bearer ${{ github.token }}" \
            -X POST -d '{ "query": "query {repository(owner: \"openwrt\", name: \"openwrt\") {refs(refPrefix: \"refs/tags/\", first: 4, orderBy: {field: TAG_COMMIT_DATE, direction: DESC}) {nodes {name target { ... on Tag {tagger {date}}}}}}}"}' https://api.github.com/graphql)"
         TAG_DATE="$( echo ${TAG_INFO} | jq -r '.data.repository.refs.nodes[] | select(.name | startswith("v25")) | .target.tagger.date' | head -n 1)"
         if [[ $(( ($(date +%s) - $(date -d "$TAG_DATE" +%s)) / 86400 )) -lt 10 || "${{ contains(github.event.action, 'tags') }}" == "true" ]]; then
@@ -233,7 +248,8 @@ jobs:
         df -hT
         cd openwrt
         echo -e "$(($(nproc)+1)) thread compile"
-        make -j$(($(nproc)+1)) || { log=$(mktemp);make V=s &>$log; } || { tail -50 $log; curl -k --data chat_id="${{ env.TELEGRAM_CHAT_ID }}" --data "text=❌ OpenWrt ${{ env.VERSION }} ${{matrix.target}} 编译失败 😂" "https://api.telegram.org/bot${{ env.TELEGRAM_TOKEN }}/sendMessage";df -hT;exit 1; }
+        # 并行编译失败时单线程重试，并直接在 Actions 日志中保留错误。
+        make -j$(($(nproc)+1)) || { log=$(mktemp);make V=s &>$log; } || { tail -50 "$log";df -hT;exit 1; }
         rm -rf staging_dir/toolchain-*/bin/*openwrt-linux-musl-lto-dump
         rm -rf staging_dir/toolchain-*/initial
         df -hT
@@ -251,7 +267,7 @@ jobs:
 
     - name: Deploy imagebuilder to server
       uses: easingthemes/ssh-deploy@main
-      if: env.SSH_PRIVATE_KEY && ! contains(github.event.action, 'noser')
+      if: github.event_name != 'workflow_dispatch' && env.SSH_PRIVATE_KEY && ! contains(github.event.action, 'noser')
       with:
         SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         ARGS: "-avr --timeout=600 --include='kwrt-imagebuilder-*' --include='kwrt-*-initramfs*' --exclude='kwrt-*'"
@@ -286,7 +302,7 @@ jobs:
       continue-on-error: true
       if: env.REPO_TOKEN && env.UPLOAD_FIRMWARE_FOR_RELEASE == 'true'
       env:
-        GITHUB_TOKEN: ${{ secrets.TOKEN_KIDDIN9 }}
+        GITHUB_TOKEN: ${{ github.token }}
       with:
         files: "${{ env.FIRMWARE }}/*"
         name: ${{ env.date2 }} ${{matrix.target}} ${{ env.EMOJI }}
@@ -295,30 +311,12 @@ jobs:
     
     - name: WeChat notification
       continue-on-error: true
-      if: env.SCKEY
+      if: github.event_name != 'workflow_dispatch' && env.SCKEY
       run: |
         # [ steps.compile.outputs.status == 'success' ] && curl https://sctapi.ftqq.com/${{ secrets.SCKEY }}.send?text=🎉OpenWrt_${{ env.VERSION }}_${{matrix.target}}编译完成😋|| curl https://sctapi.ftqq.com/${{ secrets.SCKEY }}.send?text=❌OpenWrt_${{ env.VERSION }}_${{matrix.target}}编译失败😂
 
     - name: Telegram notification
-      if: env.TELEGRAM_TOKEN && ! contains(github.event.action, 'notg')
+      if: github.event_name != 'workflow_dispatch' && env.TELEGRAM_TOKEN && ! contains(github.event.action, 'notg')
       continue-on-error: true
       run: |
         curl -k --data chat_id="${{ env.TELEGRAM_CHAT_ID }}" --data "text=🎉 OpenWrt ${{ env.VERSION }} ${{matrix.target}} 编译成功 😋  https://dl.openwrt.ai/firmware/${{matrix.target}}/  ${{ env.COWURL }}   ${{ env.WETRANS }} 🚀" "https://api.telegram.org/bot${{ env.TELEGRAM_TOKEN }}/sendMessage"
-
-    - name: Delete workflow runs
-      uses: GitRML/delete-workflow-runs@main
-      continue-on-error: true
-      with:
-        token: ${{ secrets.TOKEN_KIDDIN9 }}
-        retain_days: 100
-        keep_minimum_runs: 0
-
-    - name: Remove old Releases
-      uses: dev-drprasad/delete-older-releases@master
-      continue-on-error: true
-      if: env.UPLOAD_FIRMWARE_FOR_RELEASE == 'true' && !cancelled()
-      with:
-        keep_latest: 15
-        delete_tags: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.TOKEN_KIDDIN9 }}
