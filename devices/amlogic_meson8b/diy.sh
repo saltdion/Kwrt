@@ -15,6 +15,7 @@ sed -i 's/Os/O2/g' include/target.mk
 git_clone_path master https://github.com/coolsnowwolf/lede target/linux/amlogic
 
 mv -f target/linux/amlogic/patches-6.18 target/linux/amlogic/patches-6.12
+mv -f target/linux/amlogic/files-6.18 target/linux/amlogic/files-6.12
 mv -f target/linux/amlogic/config-6.18 target/linux/amlogic/config-6.12
 mv -f target/linux/amlogic/meson8b/config-6.18 target/linux/amlogic/meson8b/config-6.12
 
@@ -25,6 +26,6 @@ sed -i -e "s/6.6/6.12/" \
 	   -e "s/ pci pcie//" \
 target/linux/amlogic/Makefile
 
-rm -rf package/feeds/kiddin9/{*_QMI_WWAN,quectel_MHI}
+rm -rf package/feeds/kiddin9/{*_QMI_WWAN,quectel_MHI} target/linux/amlogic/patches-6.12/904-net-stmmac-disable-hw-vlan-filter-on-meson8b.patch
 
 
